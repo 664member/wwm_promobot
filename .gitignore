@@ -1,0 +1,8 @@
+config.json
+used_promos.txt
+failed_promos.txt
+promos.txt
+__pycache__/
+*.pyc
+venv/
+.venv/
