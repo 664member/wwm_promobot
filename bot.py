@@ -6,6 +6,7 @@ import queue
 import tkinter as tk
 from tkinter import ttk
 from pathlib import Path
+from datetime import datetime
 
 import pyautogui
 import keyboard
@@ -157,26 +158,65 @@ def read_promos_raw():
         return [line.strip() for line in f if line.strip()]
 
 
-def _read_file_to_set(path):
+def extract_promo_from_history_line(line):
+    """Из строки used_promos.txt / failed_promos.txt достаёт сам промо-код.
+    Поддерживает оба формата:
+      !2026-10-20 14:32:11 PROMO123   (новая запись с меткой)
+      PROMO123                          (старая запись без метки)
+    """
+    line = line.strip()
+    if not line:
+        return ""
+    if line.startswith("!"):
+        parts = line.split()
+        return parts[-1] if parts else ""
+    return line
+
+
+def _read_history_set(path):
     if not path.exists():
         return set()
+    result = set()
     with open(path, "r", encoding="utf-8") as f:
-        return {line.strip() for line in f if line.strip()}
+        for line in f:
+            p = extract_promo_from_history_line(line)
+            if p:
+                result.add(p)
+    return result
 
 
 def read_skip_set():
     """Объединяет used_promos.txt и failed_promos.txt — всё это пропускается."""
-    return _read_file_to_set(USED_FILE) | _read_file_to_set(FAILED_FILE)
+    return _read_history_set(USED_FILE) | _read_history_set(FAILED_FILE)
+
+
+def _append_history(path, promo):
+    """Универсальная запись в файл истории: удаляет старую запись этого промо
+    и дописывает новую с меткой времени в конец.
+    Так свежие записи всегда внизу, а сам промо не дублируется."""
+    existing = []
+    if path.exists():
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.rstrip("\n")
+                if not line.strip():
+                    continue
+                p = extract_promo_from_history_line(line)
+                if p == promo:
+                    continue
+                existing.append(line)
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    existing.append(f"!{stamp} {promo}")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(existing) + "\n")
 
 
 def append_used(promo):
-    with open(USED_FILE, "a", encoding="utf-8") as f:
-        f.write(promo + "\n")
+    _append_history(USED_FILE, promo)
 
 
 def append_failed(promo):
-    with open(FAILED_FILE, "a", encoding="utf-8") as f:
-        f.write(promo + "\n")
+    _append_history(FAILED_FILE, promo)
 
 
 # ---------- Основная логика ----------
@@ -285,7 +325,6 @@ class BotApp:
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
-        # Автостарт
         self.root.after(200, self.start)
 
     def start(self):
@@ -319,7 +358,6 @@ class BotApp:
 
         total_lines = len(raw)
 
-        # Дедупликация
         seen = set()
         unique = []
         for p in raw:
@@ -331,7 +369,6 @@ class BotApp:
         self.result_queue.put(("total", total_lines))
         self.result_queue.put(("stats", (total_lines, dupes, 0, 0, 0)))
 
-        # Отсчёт
         for n in range(5, 0, -1):
             if self.stop_event.is_set():
                 self.result_queue.put(("finish", None))
@@ -351,7 +388,6 @@ class BotApp:
 
             occurrences = raw.count(promo)
 
-            # Пропуск: уже в used/failed, или уже вводили в этом прогоне
             if promo in skip or promo in seen_in_run:
                 skipped += occurrences
                 processed += occurrences
@@ -379,13 +415,12 @@ class BotApp:
             else:
                 errors.extend([promo] * occurrences)
                 if cfg.get("skip_used"):
-                    append_failed(promo)   # <-- ошибки тоже в скип
+                    append_failed(promo)
 
             processed += occurrences
             self.result_queue.put(("progress", processed))
             self.result_queue.put(("stats", (total_lines, dupes, skipped, success, len(errors))))
 
-            # Пауза с проверкой F5
             elapsed = 0.0
             while elapsed < cfg["delay_between_promos"]:
                 if self.stop_event.is_set():
